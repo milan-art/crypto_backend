@@ -1,0 +1,134 @@
+const db = require('../../config/db');
+const { Wallet } = require("ethers");
+
+// Save the 12 words into DB
+exports.addword = async (req, res) => {
+    const { user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve } = req.body;
+
+    const sql = `
+        INSERT INTO wallet_history 
+        (user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+
+    db.query(sql, [
+        user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
+    ], (err, result) => {
+        if (err) {
+            console.error("❌ Database Error (Insert):", err);
+            return res.status(500).json({ msg: 'Database error during insert', status_code: false });
+        }
+        res.status(200).json({ msg: 'Wallet words saved successfully', status_code: true });
+    });
+};
+
+// Get 12 words from DB and generate wallet
+exports.generateWalletAddress = async (req, res) => {
+    const { user_id } = req.params;
+
+    const sql = `
+        SELECT one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
+        FROM wallet_history
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    `;
+
+    db.query(sql, [user_id], (err, results) => {
+        if (err) {
+            console.error("❌ Database Error (Fetch):", err);
+            return res.status(500).json({ msg: 'Database error during fetch', status_code: false });
+        }
+
+        if (results.length === 0) {
+            return res.status(404).json({ msg: 'No wallet found for user', status_code: false });
+        }
+
+        // Combine words into a mnemonic
+        const row = results[0];
+        const mnemonic = [
+            row.one, row.two, row.three, row.four, row.five, row.six,
+            row.seven, row.eight, row.nine, row.ten, row.eleven, row.twelve
+        ].join(" ");
+
+        try {
+            const wallet = Wallet.fromPhrase(mnemonic);
+            return res.status(200).json({
+                address: wallet.address,
+                mnemonic
+            });
+        } catch (err) {
+            console.error("❌ Wallet Generation Error:", err);
+            return res.status(500).json({ msg: 'Invalid mnemonic', status_code: false });
+        }
+    });
+};
+
+
+exports.walletHistory = async (req, res) => {
+    const { user_id } = req.params;
+    const covalentApiKey = process.env.COVALENT_API_KEY;  // Store your API key in env variable
+
+    if (!covalentApiKey) {
+        return res.status(500).json({ msg: 'Missing Covalent API key', status_code: false });
+    }
+
+    const sql = `
+        SELECT one, two, three, four, five, six,
+               seven, eight, nine, ten, eleven, twelve
+        FROM wallet_history
+        WHERE user_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+    `;
+
+    db.query(sql, [user_id], async (err, results) => {
+        if (err) {
+            console.error(err);
+            return res.status(500).json({ msg: "Database error", status_code: false });
+        }
+        if (results.length === 0) {
+            return res.status(404).json({ msg: "No wallet found", status_code: false });
+        }
+
+        const row = results[0];
+        const mnemonic = [
+            row.one, row.two, row.three, row.four, row.five, row.six,
+            row.seven, row.eight, row.nine, row.ten, row.eleven, row.twelve
+        ].join(" ");
+
+        try {
+            const wallet = Wallet.fromPhrase(mnemonic);
+            const history = await getWalletHistoryFromMnemonic(mnemonic, covalentApiKey);
+            return res.status(200).json({
+                walletAddress: wallet.address,
+                transactions: history.transactions
+            });
+        } catch (error) {
+            console.error(error);
+            return res.status(500).json({ msg: "Error generating wallet or fetching history", status_code: false });
+        }
+    });
+};
+
+
+// Helper function to call Covalent API and get transactions
+async function getWalletHistoryFromMnemonic(mnemonic, apiKey) {
+    try {
+        const wallet = Wallet.fromPhrase(mnemonic);
+        const walletAddress = wallet.address;
+
+        const chainId = 1;  // Ethereum Mainnet
+        const url = `https://api.covalenthq.com/v1/${chainId}/address/${walletAddress}/transactions_v2/?key=${apiKey}`;
+
+        const response = await axios.get(url);
+        return {
+            address: walletAddress,
+            transactions: response.data.data.items || []
+        };
+    } catch (error) {
+        console.error("Error fetching wallet history:", error.message);
+        throw error;
+    }
+}
+
