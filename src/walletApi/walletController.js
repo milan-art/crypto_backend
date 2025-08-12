@@ -1,6 +1,7 @@
 const db = require('../../config/db');
 const e = require('express');
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const { link } = require('./walletRoute');
 
 exports.getWallets = async (req, res) => {
@@ -43,7 +44,7 @@ exports.getWallets = async (req, res) => {
         // Build nested unique_id object for this wallet
         const uniqueIdObj = {};
         coinIdsArray.forEach((coinId, i) => {
-          const coinName = coinNamesArray[i] || coinId;
+          const coinName = coinIdsArray[i] || coinId;
           uniqueIdObj[coinName] = priceData[coinId] || null;
         });
 
@@ -329,7 +330,14 @@ exports.getWalletHistory = (req, res) => {
 };
 
 exports.getCoinPrice = async (req, res) => {
-  const user_id = req.params.user_id;
+
+  const authHeader = req.headers.authorization;
+  const token = authHeader ? authHeader.slice(7) : "";
+
+   const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user_id = decoded.userId;
+    console.log("123", user_id);
+
   if (!user_id) return res.status(400).json({ msg: 'User ID is required', status_code: false });
 
   // 1. Get user wallet coins
@@ -392,6 +400,7 @@ exports.getCoinPrice = async (req, res) => {
 exports.swapCrypto = async (req, res) => {
   try {
     const { fromCoin, toCoin, amount } = req.body;
+    console.log("123", req.body);
 
     if (!fromCoin || !toCoin || !amount || isNaN(amount) || amount <= 0) {
       return res.status(400).json({ msg: "Invalid input", status_code: false });
@@ -404,6 +413,7 @@ exports.swapCrypto = async (req, res) => {
     const { data: priceData } = await axios.get(url, {
       headers: { "User-Agent": "Mozilla/5.0" },
     });
+    console.log("123", priceData);
 
     if (!priceData[fromCoin.toLowerCase()] || !priceData[toCoin.toLowerCase()]) {
       return res.status(404).json({ msg: "Coin price not found", status_code: false });

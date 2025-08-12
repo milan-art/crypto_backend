@@ -5,7 +5,7 @@ const upload = require('../../src/uploadimage/upload');
 
 router.get('/get_wallets', walletController.getWallets);
 router.get('/get_wallet_history/:user_id', walletController.getWalletHistory);
-router.get('/get_coin_price/:user_id', walletController.getCoinPrice);
+router.get('/get_coin_price', walletController.getCoinPrice);
 
 
 router.post('/add_wallet',upload.single('icon'), walletController.addWallet);
