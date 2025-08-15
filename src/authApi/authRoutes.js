@@ -11,6 +11,7 @@ router.post('/login_with_passcode', authController.loginWithPasscode);
 router.post('/login_with_password', authController.loginWithPassword );
 router.post('/forget_password', authController.forgetPassword);
 router.post('/set_new_password', authController.setNewPassword);
+router.get('/get_users', authController.getuser);
 
 // ------google auth
 router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));

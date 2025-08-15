@@ -3,7 +3,9 @@ const e = require('express');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const { link } = require('./walletRoute');
-
+let cachedData = null;
+let lastFetchTime = 0;
+const CACHE_DURATION = 60 * 1000;
 exports.getWallets = async (req, res) => {
   const sql = `SELECT * FROM cripto_list WHERE is_active = 1`;
 
@@ -15,6 +17,12 @@ exports.getWallets = async (req, res) => {
 
     if (results.length === 0) {
       return res.status(404).json({ msg: 'No coins found', status_code: false });
+    }
+
+    // If cache exists and not expired → return cached response
+    if (cachedData && Date.now() - lastFetchTime < CACHE_DURATION) {
+      console.log("✅ Serving data from cache");
+      return res.status(200).json({ data: cachedData, status_code: true });
     }
 
     // STEP 1: Collect all unique_ids for CoinGecko API
@@ -39,13 +47,10 @@ exports.getWallets = async (req, res) => {
       // STEP 3: Map DB results with API data
       const enrichedWallets = results.map(wallet => {
         const coinIdsArray = wallet.unique_id.split(',').map(c => c.trim().toLowerCase());
-        const coinNamesArray = wallet.name.split(',').map(c => c.trim());
-
-        // Build nested unique_id object for this wallet
         const uniqueIdObj = {};
-        coinIdsArray.forEach((coinId, i) => {
-          const coinName = coinIdsArray[i] || coinId;
-          uniqueIdObj[coinName] = priceData[coinId] || null;
+
+        coinIdsArray.forEach((coinId) => {
+          uniqueIdObj[coinId] = priceData[coinId] || null;
         });
 
         return {
@@ -62,10 +67,14 @@ exports.getWallets = async (req, res) => {
         };
       });
 
+      // Save to cache
+      cachedData = enrichedWallets;
+      lastFetchTime = Date.now();
+
       res.status(200).json({ data: enrichedWallets, status_code: true });
 
     } catch (apiErr) {
-      console.error("❌ CoinGecko Error:", apiErr.message);
+      console.error("❌ API Error:", apiErr.message);
       res.status(502).json({ msg: 'Failed to fetch price from CoinGecko', status_code: false });
     }
   });
@@ -330,72 +339,89 @@ exports.getWalletHistory = (req, res) => {
 };
 
 exports.getCoinPrice = async (req, res) => {
+  try {
+    // 1. Extract & verify token
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.slice(7) : "";
+    if (!token) {
+      return res.status(401).json({ msg: "Authorization token required", status_code: false });
+    }
 
-  const authHeader = req.headers.authorization;
-  const token = authHeader ? authHeader.slice(7) : "";
-
-   const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user_id = decoded.userId;
-    console.log("123", user_id);
+    if (!user_id) {
+      return res.status(400).json({ msg: "User ID is required", status_code: false });
+    }
 
-  if (!user_id) return res.status(400).json({ msg: 'User ID is required', status_code: false });
+    // 2. Get user wallet with uniqueId from cripto_list
+    const walletSql = `
+      SELECT uw.coin_id, uw.quantity, cl.unique_id
+      FROM user_wallet uw
+      JOIN cripto_list cl ON cl.id = uw.coin_id
+      WHERE uw.user_id = ? AND uw.is_active = 1 AND cl.is_active = 1
+    `;
+    const walletRows = await db.promise().query(walletSql, [user_id]).then(r => r[0]);
 
-  // 1. Get user wallet coins
-  const walletSql = 'SELECT coin_id, quantity FROM user_wallet WHERE user_id = ? AND is_active = 1';
-  const walletRows = await db.promise().query(walletSql, [user_id]).then(r => r[0]);
+    if (walletRows.length === 0) {
+      return res.status(200).json({ msg: "No holdings", status_code: true, data: [], total_value: 0 });
+    }
 
-  if (walletRows.length === 0) {
-    return res.status(200).json({ msg: 'No holdings', status_code: true, data: [], total_value: 0 });
-  }
+    // 3. Build mapping & list of CoinGecko IDs (lowercased)
+    const mapping = {};
+    for (const row of walletRows) {
+      mapping[row.coin_id] = row.unique_id.toLowerCase();
+    }
 
-  // 2. Map coin IDs to CoinGecko IDs (e.g. {1: 'ethereum', 2: 'solana'})
-  const mapping = {};
-  for (const row of walletRows) {
-    mapping[row.coin_id] = row.coin_id;
-  }
+    const coinIds = walletRows.map(r => mapping[r.coin_id]).filter(Boolean).join(",");
+    if (!coinIds) {
+      return res.status(400).json({ msg: "Coin IDs not recognized", status_code: false });
+    }
 
-  const coinIds = walletRows.map(r => mapping[r.coin_id]).filter(Boolean).join(',');
-  if (!coinIds) {
-    return res.status(400).json({ msg: 'Coin IDs not recognized', status_code: false });
-  }
+    // 4. Fetch prices from CoinGecko
+    const fetchUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${coinIds}&vs_currencies=usd&include_24hr_change=true`;
+    const cgResp = await fetch(fetchUrl);
+    if (!cgResp.ok) {
+      return res.status(502).json({ msg: "Error fetching from CoinGecko", status_code: false });
+    }
+    const priceData = await cgResp.json();
 
-  // 3. Fetch current prices
-  const fetchUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${coinIds}&vs_currencies=usd&include_24hr_change=true`;
-  const cgResp = await fetch(fetchUrl);
-  if (!cgResp.ok) {
-    return res.status(502).json({ msg: 'Error fetching from CoinGecko', status_code: false });
-  }
-  const priceData = await cgResp.json();
+    // 5. Calculate per-coin and total
+    const data = [];
+    let totalValue = 0;
 
-  // 4. Calculate per-coin and total values
-  const data = [];
-  let totalValue = 0;
+    for (const row of walletRows) {
+      const cgId = mapping[row.coin_id]; // already lowercase
+      const priceInfo = priceData[cgId];
+      if (!priceInfo) continue;
 
-  for (const row of walletRows) {
-    const cgId = mapping[row.coin_id];
-    const priceInfo = priceData[cgId];
-    if (!priceInfo) continue;
+      const currentPrice = priceInfo.usd;
+      const total_value_per_coin = currentPrice * row.quantity;
+      totalValue += total_value_per_coin;
 
-    const currentPrice = priceInfo.usd;
-    const total_value_per_coin = currentPrice * row.quantity;
-    totalValue += total_value_per_coin;
+      data.push({
+        coin_id: row.coin_id,
+        unique_id: cgId,
+        quantity: row.quantity,
+        current_price: currentPrice,
+        total_value_per_coin: parseFloat(total_value_per_coin.toFixed(2)),
+        usd_24h_change: priceInfo.usd_24h_change
+      });
+    }
 
-    data.push({
-      coin_id: row.coin_id,
-      quantity: row.quantity,
-      current_price: currentPrice,
-      total_value_per_coin,
-      usd_24h_change: priceInfo.usd_24h_change
+    // 6. Send response
+    res.status(200).json({
+      msg: "User coin values fetched successfully",
+      status_code: true,
+      data,
+      total_value: parseFloat(totalValue.toFixed(2))
     });
-  }
 
-  res.status(200).json({
-    msg: 'User coin values fetched successfully',
-    status_code: true,
-    data,
-    total_value: totalValue
-  });
+  } catch (error) {
+    console.error("Error in getCoinPrice:", error);
+    res.status(500).json({ msg: "Internal server error", status_code: false });
+  }
 };
+
 
 exports.swapCrypto = async (req, res) => {
   try {

@@ -68,6 +68,23 @@ exports.register = (req, res) => {
   });
 };
 
+exports.getuser = (req, res) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader ? authHeader.slice(7) : "";
+
+  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const id = decoded.userId;
+
+    const sql2 = `SELECT * FROM users WHERE id = ?`;
+    db.query(sql2, [id], (err, result) => {
+      if (err) return res.status(500).json({ msg: 'Database error',status_code: false});
+      if (result.length === 0) return res.status(404).json({ msg: 'User not found' , status_code: false});
+
+      const user = result[0];
+      res.status(200).json({ user });
+    });
+}
+
 exports.verifyEmail = (req, res) => {
   const authHeader = req.headers.authorization;
   const token = authHeader ? authHeader.slice(7) : "";

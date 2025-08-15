@@ -16,11 +16,12 @@ async (accessToken, refreshToken, profile, done) => {
     db.query(sql, [email], async (err, results) => {
       if (err) return done(err);
 
+      let user;
+
       if (results.length > 0) {
         // Existing user
-        const user = results[0];
-        console.log("exitingUser:",user);
-        return done(null, user);
+        user = results[0];
+        console.log("existingUser:", user);
       } else {
         // New user, insert
         const newUser = {
@@ -32,15 +33,33 @@ async (accessToken, refreshToken, profile, done) => {
           isActive: 1,
         };
 
-        const insertSql = `INSERT INTO users (username, name, email, is_email_verified, is_phone_verified, isActive) VALUES (?, ?, ?,1,1,1)`;
+        const insertSql = `
+          INSERT INTO users (username, name, email, is_email_verified, is_phone_verified, isActive) 
+          VALUES (?, ?, ?, 1, 1, 1)
+        `;
 
-        db.query(insertSql, [newUser.username, newUser.name, newUser.email], (err, result) => {
-          console.log("newUser:",result);
-          if (err) return done(err);
-          newUser.id = result.insertId;
-          return done(null, newUser);
+        const insertResult = await new Promise((resolve, reject) => {
+          db.query(insertSql, [newUser.username, newUser.name, newUser.email], (err, result) => {
+            if (err) reject(err);
+            else resolve(result);
+          });
         });
+
+        newUser.id = insertResult.insertId;
+        user = newUser;
       }
+
+      // Generate JWT token (same as passcode login)
+      const token = jwt.sign(
+        { userId: user.id, email: user.email },
+        process.env.JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+
+      // Pass token along with user object
+      user.token = token;
+
+      return done(null, user);
     });
   } catch (error) {
     done(error);
