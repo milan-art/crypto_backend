@@ -3,55 +3,154 @@ const e = require('express');
 const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const { link } = require('./walletRoute');
-let cachedData = null;
-let lastFetchTime = 0;
-const CACHE_DURATION = 60 * 1000;
+const cryptoPriceService = require('../cryptoApi/cryptoPriceService');
+
 exports.getWallets = async (req, res) => {
-  const sql = `SELECT * FROM cripto_list WHERE is_active = 1`;
+  try {
+    // Use the crypto price service to get current prices with automatic cache validation
+    const walletsWithPrices = await cryptoPriceService.getCurrentPrices();
+    
+    if (walletsWithPrices.length === 0) {
+      // Fallback to direct database query if crypto price service fails
+      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1 ORDER BY name`;
+      
+      db.query(fallbackSql, async (err, results) => {
+        if (err) {
+          console.error("❌ getWallets: Fallback DB Error:", err);
+          return res.status(500).json({ msg: 'Database error', status_code: false });
+        }
 
-  db.query(sql, async (err, results) => {
-    if (err) {
-      console.error("❌ DB Error:", err);
-      return res.status(500).json({ msg: 'Database error', status_code: false });
+        if (results.length === 0) {
+          return res.status(404).json({ msg: 'No coins found', status_code: false });
+        }
+
+        // Format the response with basic data (no price info)
+        const enrichedWallets = results.map(wallet => {
+          let uniqueIdObj = {};
+          if (typeof wallet.unique_id === 'string' && wallet.unique_id.includes(',')) {
+            const coinIdsArray = wallet.unique_id.split(',').map(c => c.trim().toLowerCase());
+            coinIdsArray.forEach((coinId) => {
+              uniqueIdObj[coinId] = {
+                usd: 0,
+                usd_24h_change: 0
+              };
+            });
+          } else {
+            uniqueIdObj[wallet.unique_id.toLowerCase()] = {
+              usd: 0,
+              usd_24h_change: 0
+            };
+          }
+
+          return {
+            id: wallet.id,
+            name: wallet.name,
+            is_active: wallet.is_active,
+            unique_id: uniqueIdObj,
+            icon: `${req.protocol}://${req.get('host')}${wallet.icon}`,
+            market_cap: wallet.market_cap,
+            type: wallet.type,
+            link: wallet.link,
+            current_value: 0,
+            last_24_change: 0,
+            fetch_date: null,
+            created_at: wallet.created_at,
+            updated_at: wallet.updated_at
+          };
+        });
+
+        res.status(200).json({ 
+          data: enrichedWallets, 
+          status_code: true,
+          message: 'Wallets retrieved using fallback method (no price data)',
+          cache_info: null
+        });
+      });
+      
+      return;
     }
 
-    if (results.length === 0) {
-      return res.status(404).json({ msg: 'No coins found', status_code: false });
-    }
+    // Format the response to include the new price data
+    const enrichedWallets = walletsWithPrices.map(wallet => {
+      // Parse unique_id if it's a comma-separated string
+      let uniqueIdObj = {};
+      if (typeof wallet.unique_id === 'string' && wallet.unique_id.includes(',')) {
+        const coinIdsArray = wallet.unique_id.split(',').map(c => c.trim().toLowerCase());
+        coinIdsArray.forEach((coinId) => {
+          uniqueIdObj[coinId] = {
+            usd: Number(wallet.current_value) || 0,
+            usd_24h_change: Number(wallet.last_24_change) || 0
+          };
+        });
+      } else {
+        // Single coin ID
+        uniqueIdObj[wallet.unique_id.toLowerCase()] = {
+          usd: Number(wallet.current_value) || 0,
+          usd_24h_change: Number(wallet.last_24_change) || 0
+        };
+      }
 
-    // If cache exists and not expired → return cached response
-    if (cachedData && Date.now() - lastFetchTime < CACHE_DURATION) {
-      console.log("✅ Serving data from cache");
-      return res.status(200).json({ data: cachedData, status_code: true });
-    }
-
-    // STEP 1: Collect all unique_ids for CoinGecko API
-    let allUniqueIds = [];
-    results.forEach(wallet => {
-      const coinIdsArray = wallet.unique_id.split(',').map(c => c.trim().toLowerCase());
-      allUniqueIds.push(...coinIdsArray);
+      return {
+        id: wallet.id,
+        name: wallet.name,
+        is_active: wallet.is_active,
+        unique_id: uniqueIdObj,
+        icon: `${req.protocol}://${req.get('host')}${wallet.icon}`,
+        market_cap: wallet.market_cap,
+        type: wallet.type,
+        link: wallet.link,
+        current_value: Number(wallet.current_value) || 0,
+        last_24_change: Number(wallet.last_24_change) || 0,
+        fetch_date: wallet.fetch_date,
+        created_at: wallet.created_at,
+        updated_at: wallet.updated_at
+      };
+    });
+    
+    res.status(200).json({ 
+      data: enrichedWallets, 
+      status_code: true,
+      message: 'Wallets retrieved successfully with price data',
+      cache_info: cryptoPriceService.getCacheStats()
     });
 
-    // Remove duplicates
-    allUniqueIds = [...new Set(allUniqueIds)];
-
-    const coingeckoUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${allUniqueIds.join(',')}&vs_currencies=usd&include_24hr_change=true`;
-    console.log("🔗 CoinGecko URL:", coingeckoUrl);
-
-    try {
-      // STEP 2: Fetch price data for all coins
-      const { data: priceData } = await axios.get(coingeckoUrl, {
-        headers: { 'User-Agent': 'Mozilla/5.0' }
-      });
-
-      // STEP 3: Map DB results with API data
-      const enrichedWallets = results.map(wallet => {
-        const coinIdsArray = wallet.unique_id.split(',').map(c => c.trim().toLowerCase());
-        const uniqueIdObj = {};
-
-        coinIdsArray.forEach((coinId) => {
-          uniqueIdObj[coinId] = priceData[coinId] || null;
+  } catch (error) {
+    console.error("❌ Error in getWallets:", error);
+    
+    // Try fallback method on error
+    const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1 ORDER BY name`;
+    
+    db.query(fallbackSql, (err, results) => {
+      if (err) {
+        console.error("❌ getWallets: Fallback DB Error:", err);
+        return res.status(500).json({ 
+          msg: 'Failed to fetch wallets', 
+          status_code: false,
+          error: error.message
         });
+      }
+
+      if (results.length === 0) {
+        return res.status(404).json({ msg: 'No coins found', status_code: false });
+      }
+
+      // Format the response with basic data (no price info)
+      const enrichedWallets = results.map(wallet => {
+        let uniqueIdObj = {};
+        if (typeof wallet.unique_id === 'string' && wallet.unique_id.includes(',')) {
+          const coinIdsArray = wallet.unique_id.split(',').map(c => c.trim().toLowerCase());
+          coinIdsArray.forEach((coinId) => {
+            uniqueIdObj[coinId] = {
+              usd: 0,
+              usd_24h_change: 0
+            };
+          });
+        } else {
+          uniqueIdObj[wallet.unique_id.toLowerCase()] = {
+            usd: 0,
+            usd_24h_change: 0
+          };
+        }
 
         return {
           id: wallet.id,
@@ -62,32 +161,29 @@ exports.getWallets = async (req, res) => {
           market_cap: wallet.market_cap,
           type: wallet.type,
           link: wallet.link,
+          current_value: 0,
+          last_24_change: 0,
+          fetch_date: null,
           created_at: wallet.created_at,
           updated_at: wallet.updated_at
         };
       });
 
-      // Save to cache
-      cachedData = enrichedWallets;
-      lastFetchTime = Date.now();
-
-      res.status(200).json({ data: enrichedWallets, status_code: true });
-
-    } catch (apiErr) {
-      console.error("❌ API Error:", apiErr.message);
-      res.status(502).json({ msg: 'Failed to fetch price from CoinGecko', status_code: false });
-    }
-  });
+      res.status(200).json({ 
+        data: enrichedWallets, 
+        status_code: true,
+        message: 'Wallets retrieved using fallback method due to error',
+        error: error.message,
+        cache_info: null
+      });
+    });
+  }
 };
 
 
 exports.addWallet = (req, res) => {
   const { name, unique_id, market_cap, type } = req.body;
   const iconFile = req.file;
-
-  // Debug logs (optional)
-  console.log("📥 Wallet Body:", req.body);
-  console.log("🖼️ Uploaded Icon:", iconFile);
 
   // Validate required fields
   if (!name || !unique_id || !market_cap || !type) {
@@ -99,7 +195,7 @@ exports.addWallet = (req, res) => {
   }
 
   // Store relative path for image
- const iconPath = `/icon/${iconFile.filename}`;  // Use this in frontend too
+  const iconPath = `/icon/${iconFile.filename}`;
 
   // SQL INSERT query
   const sql = `
@@ -353,9 +449,9 @@ exports.getCoinPrice = async (req, res) => {
       return res.status(400).json({ msg: "User ID is required", status_code: false });
     }
 
-    // 2. Get user wallet with uniqueId from cripto_list
+    // 2. Get user wallet with coin details from cripto_list
     const walletSql = `
-      SELECT uw.coin_id, uw.quantity, cl.unique_id
+      SELECT uw.coin_id, uw.quantity, uw.price, cl.unique_id, cl.name, cl.current_value, cl.last_24_change
       FROM user_wallet uw
       JOIN cripto_list cl ON cl.id = uw.coin_id
       WHERE uw.user_id = ? AND uw.is_active = 1 AND cl.is_active = 1
@@ -366,54 +462,64 @@ exports.getCoinPrice = async (req, res) => {
       return res.status(200).json({ msg: "No holdings", status_code: true, data: [], total_value: 0 });
     }
 
-    // 3. Build mapping & list of CoinGecko IDs (lowercased)
-    const mapping = {};
-    for (const row of walletRows) {
-      mapping[row.coin_id] = row.unique_id.toLowerCase();
-    }
+    // 3. Get current prices from cached database (this will trigger background updates if needed)
+    const coinIds = walletRows.map(row => row.coin_id);
+    const currentPrices = await cryptoPriceService.getCurrentPrices(coinIds);
+    
+    // Create a map of coin_id to current price data
+    const priceMap = {};
+    currentPrices.forEach(coin => {
+      priceMap[coin.id] = {
+        current_value: Number(coin.current_value) || 0,
+        last_24_change: Number(coin.last_24_change) || 0,
+        fetch_date: coin.fetch_date
+      };
+    });
 
-    const coinIds = walletRows.map(r => mapping[r.coin_id]).filter(Boolean).join(",");
-    if (!coinIds) {
-      return res.status(400).json({ msg: "Coin IDs not recognized", status_code: false });
-    }
-
-    // 4. Fetch prices from CoinGecko
-    const fetchUrl = `https://api.coingecko.com/api/v3/simple/price?ids=${coinIds}&vs_currencies=usd&include_24hr_change=true`;
-    const cgResp = await fetch(fetchUrl);
-    if (!cgResp.ok) {
-      return res.status(502).json({ msg: "Error fetching from CoinGecko", status_code: false });
-    }
-    const priceData = await cgResp.json();
-
-    // 5. Calculate per-coin and total
+    // 4. Calculate per-coin and total using cached prices
     const data = [];
     let totalValue = 0;
 
     for (const row of walletRows) {
-      const cgId = mapping[row.coin_id]; // already lowercase
-      const priceInfo = priceData[cgId];
-      if (!priceInfo) continue;
+      const priceInfo = priceMap[row.coin_id];
+      if (!priceInfo || priceInfo.current_value === 0) {
+        console.warn(`⚠️ No price data for coin ID ${row.coin_id}`);
+        continue;
+      }
 
-      const currentPrice = priceInfo.usd;
-      const total_value_per_coin = currentPrice * row.quantity;
+      const currentPrice = priceInfo.current_value;
+      const total_value_per_coin = currentPrice * Number(row.quantity);
       totalValue += total_value_per_coin;
 
       data.push({
         coin_id: row.coin_id,
-        unique_id: cgId,
-        quantity: row.quantity,
+        unique_id: row.unique_id,
+        name: row.name,
+        quantity: Number(row.quantity),
+        purchase_price: Number(row.price),
         current_price: currentPrice,
         total_value_per_coin: parseFloat(total_value_per_coin.toFixed(2)),
-        usd_24h_change: priceInfo.usd_24h_change
+        usd_24h_change: priceInfo.last_24_change,
+        price_updated_at: priceInfo.fetch_date
       });
     }
 
-    // 6. Send response
+    if (data.length === 0) {
+      return res.status(200).json({ 
+        msg: "No valid price data available for holdings", 
+        status_code: true, 
+        data: [], 
+        total_value: 0 
+      });
+    }
+
+    // 5. Send response
     res.status(200).json({
       msg: "User coin values fetched successfully",
       status_code: true,
       data,
-      total_value: parseFloat(totalValue.toFixed(2))
+      total_value: parseFloat(totalValue.toFixed(2)),
+      cache_info: cryptoPriceService.getCacheStats()
     });
 
   } catch (error) {
@@ -426,40 +532,54 @@ exports.getCoinPrice = async (req, res) => {
 exports.swapCrypto = async (req, res) => {
   try {
     const { fromCoin, toCoin, amount } = req.body;
-    console.log("123", req.body);
 
     if (!fromCoin || !toCoin || !amount || isNaN(amount) || amount <= 0) {
       return res.status(400).json({ msg: "Invalid input", status_code: false });
     }
 
-    // STEP 1: Get prices for both coins from CoinGecko
-    const ids = [fromCoin.toLowerCase(), toCoin.toLowerCase()].join(",");
-    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`;
-
-    const { data: priceData } = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-    });
-    console.log("123", priceData);
-
-    if (!priceData[fromCoin.toLowerCase()] || !priceData[toCoin.toLowerCase()]) {
-      return res.status(404).json({ msg: "Coin price not found", status_code: false });
+    // Get current prices from cached database
+    const coinLookupSql = `
+      SELECT id, unique_id, current_value 
+      FROM cripto_list 
+      WHERE unique_id IN (?, ?) AND is_active = 1
+    `;
+    
+    const coinRows = await db.promise().query(coinLookupSql, [fromCoin.toLowerCase(), toCoin.toLowerCase()]).then(r => r[0]);
+    
+    if (coinRows.length < 2) {
+      return res.status(404).json({ msg: "One or both coins not found in database", status_code: false });
     }
 
-    const fromPrice = priceData[fromCoin.toLowerCase()].usd;
-    const toPrice = priceData[toCoin.toLowerCase()].usd;
+    // Create a map of unique_id to price data
+    const priceMap = {};
+    coinRows.forEach(coin => {
+      priceMap[coin.unique_id] = {
+        id: coin.id,
+        current_value: Number(coin.current_value) || 0
+      };
+    });
 
-    // STEP 2: Convert amount
-    const usdValue = amount * fromPrice;
+    const fromPrice = priceMap[fromCoin.toLowerCase()]?.current_value;
+    const toPrice = priceMap[toCoin.toLowerCase()]?.current_value;
+
+    if (!fromPrice || !toPrice) {
+      return res.status(404).json({ msg: "Price data not available for one or both coins", status_code: false });
+    }
+
+    // Convert amount
+    const usdValue = Number(amount) * fromPrice;
     const convertedAmount = usdValue / toPrice;
 
-    // STEP 3: Respond with swap details
+    // Respond with swap details
     return res.status(200).json({
       status_code: true,
       swap: {
-        from: { coin: fromCoin, amount, price_usd: fromPrice },
-        to: { coin: toCoin, amount: convertedAmount, price_usd: toPrice },
-        rate: convertedAmount / amount,
+        from: { coin: fromCoin, amount: Number(amount), price_usd: fromPrice },
+        to: { coin: toCoin, amount: parseFloat(convertedAmount.toFixed(8)), price_usd: toPrice },
+        rate: parseFloat((convertedAmount / Number(amount)).toFixed(8)),
+        usd_value: parseFloat(usdValue.toFixed(2))
       },
+      cache_info: cryptoPriceService.getCacheStats()
     });
 
   } catch (err) {

@@ -188,8 +188,9 @@ exports.iframe = async (req, res) => {
     const { name } = req.params;
 
     try {
-        // 1️⃣ Fetch coin from DB
+        // Fetch coin from DB
         const sql = `SELECT * FROM cripto_list WHERE name = ? AND is_active = 1`;
+        
         db.query(sql, [name], async (err, results) => {
             if (err) {
                 console.error("❌ DB Error:", err);
@@ -200,39 +201,47 @@ exports.iframe = async (req, res) => {
                 return res.status(404).json({ msg: 'Coin not found', status_code: false });
             }
 
-            try {
-                // 2️⃣ Get current price from CoinGecko
-                const coinId = results[0].unique_id.toLowerCase(); // e.g. 'bitcoin', 'ethereum'
-                const response = await axios.get(
-                    `https://api.coingecko.com/api/v3/simple/price`,
-                    {
-                        params: {
-                            ids: coinId,
-                            vs_currencies: "usd",
-                            include_24hr_change: true
-                        }
-                    }
-                );
-
-                const priceData = response.data[coinId] || {};
-                const price = priceData.usd || null;
-                const change24h = priceData.usd_24h_change || null;
-
-                // 3️⃣ Return both DB info and price
-                res.json({
-                    msg: 'Success',
-                    status_code: true,
-                    data: {
-                        ...results[0],
-                        current_price_usd: price,
-                        usd_24h_change: change24h
-                    }
-                });
-
-            } catch (priceErr) {
-                console.error("❌ CoinGecko Error:", priceErr);
-                return res.status(500).json({ msg: 'Failed to fetch price', status_code: false });
+            const coin = results[0];
+            
+            // Check if price data needs refresh (more than 1 minute old)
+            const lastFetch = new Date(coin.fetch_date);
+            const now = new Date();
+            const timeDiff = now - lastFetch;
+            const oneMinute = 60 * 1000; // 1 minute in milliseconds
+            const needsRefresh = timeDiff > oneMinute;
+            
+            // Return current DB data immediately
+            const responseData = {
+                msg: 'Success',
+                status_code: true,
+                data: {
+                    ...coin,
+                    current_price_usd: Number(coin.current_value) || 0,
+                    usd_24h_change: Number(coin.last_24_change) || 0,
+                    price_updated_at: coin.fetch_date,
+                    cache_status: needsRefresh ? 'stale' : 'fresh',
+                    next_refresh_in: needsRefresh ? Math.ceil((oneMinute - timeDiff) / 1000) : 0
+                }
+            };
+            
+            // If refresh is needed, update prices in background
+            if (needsRefresh) {
+                const cryptoPriceService = require('../cryptoApi/cryptoPriceService');
+                
+                // Update price in background
+                cryptoPriceService.updateMultipleCoinPricesBatch([coin])
+                    .then(updateResults => {
+                        const successCount = updateResults.filter(r => r.updated).length;
+                        console.log(`✅ Background price update completed for ${coin.name}: ${successCount} successful`);
+                    })
+                    .catch(error => {
+                        console.error(`❌ Background price update failed for ${coin.name}:`, error.message);
+                    });
             }
+            
+            // Send response immediately
+            res.json(responseData);
+
         });
 
     } catch (e) {

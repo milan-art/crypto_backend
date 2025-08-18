@@ -4,6 +4,7 @@ const app = express();
 const authRoutes = require('./src/authApi/authRoutes');
 const walletRoutes = require('./src/walletApi/walletRoute');
 const historyRoutes = require('./src/historyApi/historyRoutes');
+const cryptoPriceRoutes = require('./src/cryptoApi/cryptoPriceRoutes');
 const path = require('path');
 const cors = require('cors');
 const passport = require('./src/authApi/googleStrategy');
@@ -17,6 +18,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/history', historyRoutes);
+app.use('/api/crypto', cryptoPriceRoutes);
 
 app.use(session({
   secret: process.env.SESSION_SECRET,
