@@ -6,89 +6,92 @@ const jwt = require('jsonwebtoken');
 
 // Save the 12 words into DB
 exports.addword = async (req, res) => {
-    const {type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve } = req.body;
+  try {
+    const { type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve } = req.body;
     const authHeader = req.headers.authorization;
     const token = authHeader ? authHeader.slice(7) : "";
 
+    if (!token) {
+      return res.status(401).json({ msg: 'Authorization token missing', status_code: false });
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const id = decoded.userId;
-    console.log(id);
+    const userId = decoded.userId;
 
-    // Check if userId and type already exist
-    const sql = `
-        SELECT * FROM wallet
-        WHERE user_id = ? AND type = ?
+
+    // 1️⃣ Check if wallet with same type already exists for this user
+    const checkSql = `SELECT * FROM wallet WHERE user_id = ? AND type = ?`;
+    const [existing] = await db.query(checkSql, [userId, type]);
+
+    if (existing.length > 0) {
+      return res.status(201).json({ msg: 'Wallet with same type already exists for this user', status_code: false });
+    }
+
+    // 2️⃣ Insert new wallet words
+    const insertSql = `
+      INSERT INTO wallet 
+      (user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
+    const [result] = await db.query(insertSql, [
+      userId, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
+    ]);
 
-    db.query(sql, [id, type], (err, result) => {
-        if (err) {
-            console.error("❌ Database Error (Check):", err);
-            return res.status(500).json({ msg: 'Database error during check', status_code: false });
-        }
+    res.status(200).json({ msg: 'Wallet words saved successfully', status_code: true });
 
-        if (result.length > 0) {
-            return res.status(400).json({ msg: 'Wallet with same type already exists for this user', status_code: false });
-        }
-
-        // If no existing record is found, proceed with inserting new record
-        const sql = `
-            INSERT INTO wallet 
-            (user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `;
-
-        db.query(sql, [
-            id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve
-        ], (err, result) => {
-            if (err) {
-                console.error("❌ Database Error (Insert):", err);
-                return res.status(500).json({ msg: 'Database error during insert', status_code: false });
-            }
-            res.status(200).json({ msg: 'Wallet words saved successfully', status_code: true });
-        });
-    });
+  } catch (err) {
+    console.error("❌ addword Error:", err.message);
+    res.status(500).json({ msg: 'Internal server error', status_code: false });
+  }
 };
+
 
 // Get 12 words from DB and generate wallet
 exports.generateWalletAddress = async (req, res) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader ? authHeader.slice(7) : "";
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader ? authHeader.slice(7) : "";
 
-  const decoded = jwt.verify(token, process.env.JWT_SECRET);
-  const user_id = decoded.userId;
+    if (!token) {
+      return res.status(401).json({ msg: 'Authorization token missing', status_code: false });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const userId = decoded.userId;
 
     const sql = `
-        SELECT id, user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, created_at, updated_at
-        FROM wallet
-        WHERE user_id = ?
-        ORDER BY id 
+      SELECT id, user_id, type, one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, created_at, updated_at
+      FROM wallet
+      WHERE user_id = ?
+      ORDER BY id
     `;
 
-    db.query(sql, [user_id], (err, results) => {
-        if (err) {
-            console.error("❌ Database Error (Fetch):", err);
-            return res.status(500).json({ msg: 'Database error during fetch', status_code: false });
-        }
+    const [results] = await db.query(sql, [userId]);
 
-        if (results.length === 0) {
-            return res.status(404).json({ msg: 'No wallet found for user', status_code: false });
-        }
+    if (results.length === 0) {
+      return res.status(201).json({ msg: 'No wallet found for user', status_code: false });
+    }
 
-        // Format each wallet's mnemonic
-        const wallets = results.map(row => ({
-            id: row.id,
-            type: row.type,
-            mnemonic: [
-                row.one, row.two, row.three, row.four, row.five, row.six,
-                row.seven, row.eight, row.nine, row.ten, row.eleven, row.twelve
-            ].join(' '),
-            created_at: row.created_at,
-            updated_at: row.updated_at
-        }));
+    // Format each wallet's mnemonic
+    const wallets = results.map(row => ({
+      id: row.id,
+      type: row.type,
+      mnemonic: [
+        row.one, row.two, row.three, row.four, row.five, row.six,
+        row.seven, row.eight, row.nine, row.ten, row.eleven, row.twelve
+      ].join(' '),
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }));
 
-        res.json({ status_code: true, wallets });
-    });
+    res.status(200).json({ status_code: true, wallets });
+
+  } catch (err) {
+    console.error("❌ generateWalletAddress Error:", err.message);
+    res.status(500).json({ msg: 'Internal server error', status_code: false });
+  }
 };
+
 
 exports.getwalletHistory = async (req, res) => {
   try {
@@ -116,11 +119,11 @@ exports.getwalletHistory = async (req, res) => {
       WHERE user_id = ?
     `;
 
-    const [rows] = await db.promise().query(sql, [user_id]);
+    const [rows] = await db.query(sql, [user_id]);
     console.log("rows", rows);
 
     if (!rows.length) {
-      return res.status(404).json({ status_code: false, msg: 'No wallet found' });
+      return res.status(201).json({ status_code: false, msg: 'No wallet found' });
     }
 
     // 3. Build and validate mnemonics
@@ -135,7 +138,7 @@ exports.getwalletHistory = async (req, res) => {
       .filter(Boolean);
 
     if (!validMnemonics.length) {
-      return res.status(400).json({ status_code: false, msg: 'No valid mnemonics found' });
+      return res.status(201).json({ status_code: false, msg: 'No valid mnemonics found' });
     }
 
     // 4. Fetch balances & transactions from Covalent
@@ -185,70 +188,62 @@ exports.getwalletHistory = async (req, res) => {
 
 
 exports.iframe = async (req, res) => {
+  try {
     const { name } = req.params;
 
-    try {
-        // Fetch coin from DB
-        const sql = `SELECT * FROM cripto_list WHERE name = ? AND is_active = 1`;
-        
-        db.query(sql, [name], async (err, results) => {
-            if (err) {
-                console.error("❌ DB Error:", err);
-                return res.status(500).json({ msg: 'Database error', status_code: false });
-            }
+    // 1️⃣ Fetch coin from DB
+    const sql = `SELECT * FROM cripto_list WHERE name = ? AND is_active = 1`;
+    const [results] = await db.query(sql, [name]);
 
-            if (results.length === 0) {
-                return res.status(404).json({ msg: 'Coin not found', status_code: false });
-            }
-
-            const coin = results[0];
-            
-            // Check if price data needs refresh (more than 1 minute old)
-            const lastFetch = new Date(coin.fetch_date);
-            const now = new Date();
-            const timeDiff = now - lastFetch;
-            const oneMinute = 60 * 1000; // 1 minute in milliseconds
-            const needsRefresh = timeDiff > oneMinute;
-            
-            // Return current DB data immediately
-            const responseData = {
-                msg: 'Success',
-                status_code: true,
-                data: {
-                    ...coin,
-                    current_price_usd: Number(coin.current_value) || 0,
-                    usd_24h_change: Number(coin.last_24_change) || 0,
-                    price_updated_at: coin.fetch_date,
-                    cache_status: needsRefresh ? 'stale' : 'fresh',
-                    next_refresh_in: needsRefresh ? Math.ceil((oneMinute - timeDiff) / 1000) : 0
-                }
-            };
-            
-            // If refresh is needed, update prices in background
-            if (needsRefresh) {
-                const cryptoPriceService = require('../cryptoApi/cryptoPriceService');
-                
-                // Update price in background
-                cryptoPriceService.updateMultipleCoinPricesBatch([coin])
-                    .then(updateResults => {
-                        const successCount = updateResults.filter(r => r.updated).length;
-                        console.log(`✅ Background price update completed for ${coin.name}: ${successCount} successful`);
-                    })
-                    .catch(error => {
-                        console.error(`❌ Background price update failed for ${coin.name}:`, error.message);
-                    });
-            }
-            
-            // Send response immediately
-            res.json(responseData);
-
-        });
-
-    } catch (e) {
-        console.error("❌ Server Error:", e);
-        res.status(500).json({ msg: 'Internal server error', status_code: false });
+    if (results.length === 0) {
+      return res.status(201).json({ msg: 'Coin not found', status_code: false });
     }
+
+    const coin = results[0];
+
+    // 2️⃣ Determine if price data needs refresh (older than 1 minute)
+    const lastFetch = new Date(coin.fetch_date);
+    const now = new Date();
+    const timeDiff = now - lastFetch;
+    const oneMinute = 60 * 1000;
+    const needsRefresh = timeDiff > oneMinute;
+
+    // 3️⃣ Prepare response using current DB values
+    const responseData = {
+      msg: 'Success',
+      status_code: true,
+      data: {
+        ...coin,
+        current_price_usd: Number(coin.current_value) || 0,
+        usd_24h_change: Number(coin.last_24_change) || 0,
+        price_updated_at: coin.fetch_date,
+        cache_status: needsRefresh ? 'stale' : 'fresh',
+        next_refresh_in: needsRefresh ? Math.ceil((oneMinute - timeDiff) / 1000) : 0
+      }
+    };
+
+    res.status(200).json(responseData);
+
+    // 4️⃣ Update price in background if needed
+    if (needsRefresh) {
+      const cryptoPriceService = require('../cryptoApi/cryptoPriceService');
+
+      cryptoPriceService.updateMultipleCoinPricesBatch([coin])
+        .then(updateResults => {
+          const successCount = updateResults.filter(r => r.updated).length;
+          console.log(`✅ Background price update completed for ${coin.name}: ${successCount} successful`);
+        })
+        .catch(error => {
+          console.error(`❌ Background price update failed for ${coin.name}:`, error.message);
+        });
+    }
+
+  } catch (err) {
+    console.error("❌ iframe Error:", err.message);
+    res.status(500).json({ msg: 'Internal server error', status_code: false });
+  }
 };
+
 
 
 

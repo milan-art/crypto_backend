@@ -11,31 +11,24 @@ class CryptoPriceService {
 
     // Check if price data needs to be refreshed (older than 1 minute)
     async shouldRefreshPrice(coinId) {
-        return new Promise((resolve, reject) => {
+        try {
             const sql = `SELECT fetch_date FROM cripto_list WHERE id = ? AND is_active = 1`;
-            
-            db.query(sql, [coinId], (err, results) => {
-                if (err) {
-                    console.error('❌ Error checking fetch date:', err);
-                    return reject(err);
-                }
+            const [results] = await db.query(sql, [coinId]);
 
-                if (results.length === 0) {
-                    return resolve(true); // No record found, should refresh
-                }
+            if (results.length === 0) {
+                return true; // No record found → refresh needed
+            }
 
-                const lastFetch = new Date(results[0].fetch_date);
-                const now = new Date();
-                const timeDiff = now - lastFetch;
-                
-                // Should refresh if more than 1 minute has passed
-                const shouldRefresh = timeDiff > this.cacheDuration;
-                
-                resolve(shouldRefresh);
-            });
-        });
+            const lastFetch = new Date(results[0].fetch_date);
+            const now = new Date();
+            const timeDiff = now - lastFetch;
+
+            return timeDiff > this.cacheDuration; // true if stale
+        } catch (err) {
+            console.error('❌ Error checking fetch date:', err.message);
+            throw err;
+        }
     }
-
     // Sleep function for rate limiting
     sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
@@ -43,175 +36,128 @@ class CryptoPriceService {
 
     // Batch fetch and update prices for multiple coins in a single API call
     async updateMultipleCoinPricesBatch(coins) {
-        try {
-            if (coins.length === 0) {
-                return [];
-            }
+    try {
+        if (coins.length === 0) return [];
 
-            // Collect all unique IDs that need refresh
-            const uniqueIds = coins.map(coin => coin.unique_id.toLowerCase());
-            const uniqueIdsString = uniqueIds.join(',');
-            
-            // Log API call details
-            console.log(`🔄 Calling CoinGecko API: ${this.baseUrl}/simple/price`);
-            console.log(`📊 Coins: ${uniqueIdsString}`);
-            console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
-            
-            // Make single API call for all coins
-            const response = await axios.get(`${this.baseUrl}/simple/price`, {
-                params: {
-                    ids: uniqueIdsString,
-                    vs_currencies: 'usd',
-                    include_24hr_change: true
-                },
-                headers: {
-                    'User-Agent': 'Mozilla/5.0'
-                },
-                timeout: 15000 // 15 second timeout for batch requests
-            });
+        // Collect all unique IDs
+        const uniqueIds = coins.map(coin => coin.unique_id.toLowerCase());
+        const uniqueIdsString = uniqueIds.join(',');
 
-            console.log(`✅ CoinGecko API response received: ${response.status}`);
-            console.log(`📈 Price data for ${Object.keys(response.data).length} coins`);
+        console.log(`🔄 Calling CoinGecko API: ${this.baseUrl}/simple/price`);
+        console.log(`📊 Coins: ${uniqueIdsString}`);
+        console.log(`⏰ Timestamp: ${new Date().toISOString()}`);
 
-            const priceData = response.data;
+        // API call
+        const response = await axios.get(`${this.baseUrl}/simple/price`, {
+            params: { ids: uniqueIdsString, vs_currencies: 'usd', include_24hr_change: true },
+            headers: { 'User-Agent': 'Mozilla/5.0' },
+            timeout: 15000
+        });
 
-            // Update database for all coins
-            const results = [];
-            for (const coin of coins) {
-                try {
-                    const coinId = coin.unique_id.toLowerCase();
-                    const coinPriceData = priceData[coinId];
-                    
-                    if (!coinPriceData) {
-                        results.push({
-                            id: coin.id,
-                            unique_id: coin.unique_id,
-                            updated: false,
-                            reason: 'No price data received',
-                            timestamp: new Date().toISOString()
-                        });
-                        continue;
-                    }
+        console.log(`✅ CoinGecko API response received: ${response.status}`);
 
-                    // Update database with new price data
-                    const updateSql = `
-                        UPDATE cripto_list 
-                        SET current_value = ?, 
-                            last_24_change = ?, 
-                            fetch_date = CURRENT_TIMESTAMP 
-                        WHERE id = ?
-                    `;
+        const priceData = response.data;
+        const results = [];
 
-                    const currentValue = Number(coinPriceData.usd) || 0;
-                    const last24Change = Number(coinPriceData.usd_24h_change) || 0;
+        for (const coin of coins) {
+            try {
+                const coinId = coin.unique_id.toLowerCase();
+                const coinPriceData = priceData[coinId];
 
-                    await new Promise((resolve, reject) => {
-                        db.query(updateSql, [currentValue, last24Change, coin.id], (err, result) => {
-                            if (err) {
-                                console.error('❌ Error updating price in DB:', err);
-                                reject(err);
-                            } else {
-                                resolve(true);
-                            }
-                        });
-                    });
-
-                    results.push({
-                        id: coin.id,
-                        unique_id: coin.unique_id,
-                        updated: true,
-                        timestamp: new Date().toISOString()
-                    });
-
-                } catch (error) {
-                    results.push({
-                        id: coin.id,
-                        unique_id: coin.unique_id,
-                        updated: false,
-                        error: error.message,
-                        timestamp: new Date().toISOString()
-                    });
+                if (!coinPriceData) {
+                    results.push({ id: coin.id, unique_id: coin.unique_id, updated: false, reason: 'No price data', timestamp: new Date().toISOString() });
+                    continue;
                 }
-            }
 
-            return results;
+                const currentValue = Number(coinPriceData.usd) || 0;
+                const last24Change = Number(coinPriceData.usd_24h_change) || 0;
 
-        } catch (error) {
-            // Handle rate limiting specifically
-            if (error.response && error.response.status === 429) {
-                console.log(`⏳ Rate limited (429) for batch request, waiting 5 seconds before retry...`);
-                await this.sleep(5000);
-                return this.updateMultipleCoinPricesBatch(coins);
+                const updateSql = `
+                    UPDATE cripto_list 
+                    SET current_value = ?, last_24_change = ?, fetch_date = CURRENT_TIMESTAMP 
+                    WHERE id = ?
+                `;
+
+                // Use async/await version
+                await db.query(updateSql, [currentValue, last24Change, coin.id]);
+
+                results.push({ id: coin.id, unique_id: coin.unique_id, updated: true, timestamp: new Date().toISOString() });
+
+            } catch (error) {
+                results.push({ id: coin.id, unique_id: coin.unique_id, updated: false, error: error.message, timestamp: new Date().toISOString() });
             }
-            
-            console.error('❌ Error in batch price update:', error.message);
-            return coins.map(coin => ({
-                id: coin.id,
-                unique_id: coin.unique_id,
-                updated: false,
-                error: error.message,
-                timestamp: new Date().toISOString()
-            }));
         }
+
+        return results;
+
+    } catch (error) {
+        // Rate limit handling
+        if (error.response?.status === 429) {
+            console.log(`⏳ Rate limited (429), retrying in 5 seconds...`);
+            await this.sleep(5000);
+            return this.updateMultipleCoinPricesBatch(coins);
+        }
+
+        console.error('❌ Error in batch price update:', error.message);
+        return coins.map(coin => ({ id: coin.id, unique_id: coin.unique_id, updated: false, error: error.message, timestamp: new Date().toISOString() }));
     }
+}
+
 
     // Get current prices from database (with cache validation)
     async getCurrentPrices(coinIds = null) {
-        return new Promise((resolve, reject) => {
-            let sql = `
-                SELECT id, name, unique_id, current_value, last_24_change, fetch_date, 
-                       icon, market_cap, type, link, created_at, updated_at
-                FROM cripto_list 
-                WHERE is_active = 1
-            `;
-            
-            const params = [];
-            
-            if (coinIds && coinIds.length > 0) {
-                sql += ` AND id IN (${coinIds.map(() => '?').join(',')})`;
-                params.push(...coinIds);
-            }
-            
-            sql += ` ORDER BY name`;
+    try {
+        let sql = `
+            SELECT id, name, unique_id, current_value, last_24_change, fetch_date, 
+                   icon, market_cap, type, link, created_at, updated_at
+            FROM cripto_list 
+            WHERE is_active = 1
+        `;
+        const params = [];
 
-            db.query(sql, params, (err, results) => {
-                if (err) {
-                    console.error('❌ Error fetching current prices:', err);
-                    return reject(err);
-                }
+        if (coinIds?.length > 0) {
+            sql += ` AND id IN (${coinIds.map(() => '?').join(',')})`;
+            params.push(...coinIds);
+        }
 
-                // Convert numeric fields to numbers
-                const processedResults = results.map(coin => ({
-                    ...coin,
-                    current_value: Number(coin.current_value) || 0,
-                    last_24_change: Number(coin.last_24_change) || 0
-                }));
+        sql += ` ORDER BY name`;
 
-                // Check which coins need price refresh
-                const coinsNeedingRefresh = processedResults.filter(coin => {
-                    const lastFetch = new Date(coin.fetch_date);
-                    const now = new Date();
-                    const timeDiff = now - lastFetch;
-                    return timeDiff > this.cacheDuration;
-                });
+        // Use promise-based query
+        const [results] = await db.query(sql, params);
 
-                if (coinsNeedingRefresh.length > 0) {
-                    // Update prices in background with batch processing
-                    this.updateMultipleCoinPricesBatch(coinsNeedingRefresh)
-                        .then(updateResults => {
-                            const successCount = updateResults.filter(r => r.updated).length;
-                            const failureCount = updateResults.filter(r => !r.updated).length;
-                            console.log(`📊 Background batch update completed: ${successCount} successful, ${failureCount} failed`);
-                        })
-                        .catch(error => {
-                            console.error('❌ Background batch update failed:', error);
-                        });
-                }
+        // Convert numeric fields to numbers
+        const processedResults = results.map(coin => ({
+            ...coin,
+            current_value: Number(coin.current_value) || 0,
+            last_24_change: Number(coin.last_24_change) || 0
+        }));
 
-                resolve(processedResults);
-            });
+        // Coins that need refresh
+        const now = new Date();
+        const coinsNeedingRefresh = processedResults.filter(coin => {
+            const lastFetch = new Date(coin.fetch_date);
+            return now - lastFetch > this.cacheDuration;
         });
+
+        // Background price update
+        if (coinsNeedingRefresh.length > 0) {
+            this.updateMultipleCoinPricesBatch(coinsNeedingRefresh)
+                .then(updateResults => {
+                    const successCount = updateResults.filter(r => r.updated).length;
+                    const failureCount = updateResults.filter(r => !r.updated).length;
+                    console.log(`📊 Background batch update completed: ${successCount} successful, ${failureCount} failed`);
+                })
+                .catch(error => console.error('❌ Background batch update failed:', error));
+        }
+
+        return processedResults;
+
+    } catch (err) {
+        console.error('❌ Error fetching current prices:', err.message);
+        throw err;
     }
+}
+
 
     // Force refresh all coin prices with batch processing
     async forceRefreshAllPrices() {
