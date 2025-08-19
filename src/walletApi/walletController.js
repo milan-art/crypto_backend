@@ -13,7 +13,7 @@ exports.getWallets = async (req, res) => {
 
     // 2️⃣ Fallback to DB if no data
     if (walletsWithPrices.length === 0) {
-      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1 ORDER BY name`;
+      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1`;
       const [results] = await db.query(fallbackSql);
 
       if (!results.length) {
@@ -112,7 +112,7 @@ exports.getWallets = async (req, res) => {
 
     // Fallback to DB in case of error
     try {
-      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1 ORDER BY name`;
+      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1`;
       const [results] = await db.query(fallbackSql);
 
       if (!results.length) {
@@ -200,6 +200,10 @@ exports.addWallet = async (req, res) => {
 
     // Execute DB query using promise
     const [result] = await db.query(sql, [name, unique_id, iconPath, true, market_cap, type]);
+
+    if (result.affectedRows === 0) {
+      return res.status(201).json({ msg: 'Wallet not added', status_code: false });
+    }
 
     res.status(200).json({ msg: 'Wallet added successfully', status_code: true });
 
@@ -328,6 +332,7 @@ exports.bycoin = async (req, res) => {
   } catch (err) {
     console.error("❌ bycoin Error:", err);
     res.status(500).json({ msg: 'Database error', status_code: false });
+    console.log("123",err);
   }
 };
 
@@ -400,7 +405,7 @@ exports.getWalletHistory = async (req, res) => {
     }
 
     const sql = `SELECT * FROM wallet_history WHERE user_id = ? ORDER BY id DESC`;
-    const [result] = await db.promise().query(sql, [user_id]);
+    const [result] = await db.query(sql, [user_id]);
 
     if (result.length === 0) {
       return res.status(404).json({
@@ -450,7 +455,14 @@ exports.getCoinPrice = async (req, res) => {
     // Get latest coin prices
     const coinIds = walletRows.map(row => row.coin_id);
     const currentPrices = await cryptoPriceService.getCurrentPrices(coinIds);
-    const priceMap = Object.fromEntries(currentPrices.map(c => [c.id, c]));
+    const priceMap = {};
+    currentPrices.forEach(coin => {
+      priceMap[coin.id] = {
+        current_value: Number(coin.current_value) || 0,
+        last_24_change: Number(coin.last_24_change) || 0,
+        fetch_date: coin.fetch_date
+      };
+    });
 
     let totalValue = 0;
     const data = walletRows
@@ -496,54 +508,40 @@ exports.getCoinPrice = async (req, res) => {
 exports.swapCrypto = async (req, res) => {
   try {
     const { fromCoin, toCoin, amount } = req.body;
+    console.log("123", req.body);
 
     if (!fromCoin || !toCoin || !amount || isNaN(amount) || amount <= 0) {
-      return res.status(201).json({ msg: "Invalid input", status_code: false });
+      return res.status(400).json({ msg: "Invalid input", status_code: false });
     }
 
-    // Get current prices from cached database
-    const coinLookupSql = `
-      SELECT id, unique_id, current_value 
-      FROM cripto_list 
-      WHERE unique_id IN (?, ?) AND is_active = 1
-    `;
-    
-    const coinRows = await db.query(coinLookupSql, [fromCoin.toLowerCase(), toCoin.toLowerCase()]).then(r => r[0]);
-    
-    if (coinRows.length < 2) {
-      return res.status(404).json({ msg: "One or both coins not found in database", status_code: false });
-    }
+    // STEP 1: Get prices for both coins from CoinGecko
+    const ids = [fromCoin.toLowerCase(), toCoin.toLowerCase()].join(",");
+    const url = `https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`;
 
-    // Create a map of unique_id to price data
-    const priceMap = {};
-    coinRows.forEach(coin => {
-      priceMap[coin.unique_id] = {
-        id: coin.id,
-        current_value: Number(coin.current_value) || 0
-      };
+    const { data: priceData } = await axios.get(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
     });
+    console.log("123", priceData);
 
-    const fromPrice = priceMap[fromCoin.toLowerCase()]?.current_value;
-    const toPrice = priceMap[toCoin.toLowerCase()]?.current_value;
-
-    if (!fromPrice || !toPrice) {
-      return res.status(404).json({ msg: "Price data not available for one or both coins", status_code: false });
+    if (!priceData[fromCoin.toLowerCase()] || !priceData[toCoin.toLowerCase()]) {
+      return res.status(404).json({ msg: "Coin price not found", status_code: false });
     }
 
-    // Convert amount
-    const usdValue = Number(amount) * fromPrice;
+    const fromPrice = priceData[fromCoin.toLowerCase()].usd;
+    const toPrice = priceData[toCoin.toLowerCase()].usd;
+
+    // STEP 2: Convert amount
+    const usdValue = amount * fromPrice;
     const convertedAmount = usdValue / toPrice;
 
-    // Respond with swap details
+    // STEP 3: Respond with swap details
     return res.status(200).json({
       status_code: true,
       swap: {
-        from: { coin: fromCoin, amount: Number(amount), price_usd: fromPrice },
-        to: { coin: toCoin, amount: parseFloat(convertedAmount.toFixed(8)), price_usd: toPrice },
-        rate: parseFloat((convertedAmount / Number(amount)).toFixed(8)),
-        usd_value: parseFloat(usdValue.toFixed(2))
+        from: { coin: fromCoin, amount, price_usd: fromPrice },
+        to: { coin: toCoin, amount: convertedAmount, price_usd: toPrice },
+        rate: convertedAmount / amount,
       },
-      cache_info: cryptoPriceService.getCacheStats()
     });
 
   } catch (err) {
