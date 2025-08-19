@@ -120,7 +120,7 @@ class CryptoPriceService {
             params.push(...coinIds);
         }
 
-        sql += ` ORDER BY name`;
+        sql += ` ORDER BY created_at ASC`;
 
         // Use promise-based query
         const [results] = await db.query(sql, params);

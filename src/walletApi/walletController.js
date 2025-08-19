@@ -13,7 +13,7 @@ exports.getWallets = async (req, res) => {
 
     // 2️⃣ Fallback to DB if no data
     if (walletsWithPrices.length === 0) {
-      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1`;
+      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1 ORDER BY created_at DESC`;
       const [results] = await db.query(fallbackSql);
 
       if (!results.length) {
@@ -53,6 +53,8 @@ exports.getWallets = async (req, res) => {
           updated_at: wallet.updated_at
         };
       });
+
+      console.log("Step 1")
 
       return res.status(200).json({
         data: enrichedWallets,
@@ -98,6 +100,7 @@ exports.getWallets = async (req, res) => {
         updated_at: wallet.updated_at
       };
     });
+console.log("Step 2")
 
     // 4️⃣ Return wallets with price data
     res.status(200).json({
@@ -112,7 +115,7 @@ exports.getWallets = async (req, res) => {
 
     // Fallback to DB in case of error
     try {
-      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1`;
+      const fallbackSql = `SELECT * FROM cripto_list WHERE is_active = 1 ORDER BY id ASC`;
       const [results] = await db.query(fallbackSql);
 
       if (!results.length) {
@@ -152,6 +155,8 @@ exports.getWallets = async (req, res) => {
           updated_at: wallet.updated_at
         };
       });
+
+      console.log("Step 3")
 
       return res.status(200).json({
         data: enrichedWallets,
