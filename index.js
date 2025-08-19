@@ -10,26 +10,39 @@ const cors = require('cors');
 const passport = require('./src/authApi/googleStrategy');
 const session = require('express-session');
 
-// ----------------- CORS Config
 const allowedOrigins = [
-  'http://localhost:5001',      
-  'https://backedbyquantum.com' // your frontend domain
+  'http://localhost:5001',
+  'http://localhost:3001',
+  'https://backedbyquantum.com'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
+    // allow requests with no origin (like Postman, curl)
+    console.log("origin ::: ", origin)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true); // allow this origin
     } else {
-      callback(new Error('Not allowed by CORS'));
+      callback(new Error('Not allowed by CORS')); // block other origins
     }
   },
-  credentials: true,
+  credentials: true, // allow cookies/auth headers
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: '*'
+  allowedHeaders: [
+    'Content-Type',       // for JSON requests
+    'Authorization',      // for JWT or Bearer tokens
+    'Cache-Control',      // for controlling caching
+    'X-Requested-With',   // sometimes sent by AJAX requests
+    'Accept',             // MIME types the client can handle
+    'Origin',             // usually automatically handled, but safe to include
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers'
+  ]
 }));
 
-// Handle preflight (OPTIONS) requests
+// Optional: handle preflight OPTIONS requests
 // app.options('*', cors());
 
 // ----------------- Middlewares
