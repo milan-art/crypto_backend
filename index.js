@@ -10,15 +10,25 @@ const cors = require('cors');
 const passport = require('./src/authApi/googleStrategy');
 const session = require('express-session');
 
-// Middlewares
-app.use(cors());
-app.use(express.json());
+// ----------------- CORS Config
+const allowedOrigins = [
+  'http://localhost:3000',              // local dev
+  'https://your-frontend.vercel.app'    // replace with your Vercel frontend domain
+];
 
-// ----------------- Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/wallet', walletRoutes);
-app.use('/api/history', historyRoutes);
-app.use('/api/crypto', cryptoPriceRoutes);
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+
+// ----------------- Middlewares
+app.use(express.json());
 
 app.use(session({
   secret: process.env.SESSION_SECRET,
@@ -32,12 +42,17 @@ app.use(passport.session());
 passport.serializeUser((user, done) => done(null, user));
 passport.deserializeUser((obj, done) => done(null, obj));
 
+// ----------------- Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/history', historyRoutes);
+app.use('/api/crypto', cryptoPriceRoutes);
+
 // ----------------- Static file serving
 app.use('/icon', express.static(path.join(__dirname, 'src', 'uploadimage', 'icon')));
 
 // ----------------- Start server (listen on all interfaces)
-
-const PORT = process.env.PORT || 1000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running at:`);
   console.log(`   Local:   http://localhost:${PORT}`);
