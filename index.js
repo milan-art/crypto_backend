@@ -12,7 +12,7 @@ const session = require('express-session');
 
 // ----------------- CORS Config
 const allowedOrigins = [
-  'http://localhost:3001',      
+  'http://localhost:5001',      
   'https://backedbyquantum.com' // your frontend domain
 ];
 
