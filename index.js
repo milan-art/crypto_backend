@@ -12,8 +12,8 @@ const session = require('express-session');
 
 // ----------------- CORS Config
 const allowedOrigins = [
-  'http://localhost:3000',              // local dev
-  'https://your-frontend.vercel.app'    // replace with your Vercel frontend domain
+  'http://localhost:3001',      
+  'https://backedbyquantum.com' // your frontend domain
 ];
 
 app.use(cors({
@@ -24,8 +24,13 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: '*'
 }));
+
+// Handle preflight (OPTIONS) requests
+// app.options('*', cors());
 
 // ----------------- Middlewares
 app.use(express.json());
@@ -52,7 +57,7 @@ app.use('/api/crypto', cryptoPriceRoutes);
 app.use('/icon', express.static(path.join(__dirname, 'src', 'uploadimage', 'icon')));
 
 // ----------------- Start server (listen on all interfaces)
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3000; // ✅ use 1000 or env, not 3000
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running at:`);
   console.log(`   Local:   http://localhost:${PORT}`);
